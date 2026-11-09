@@ -37,19 +37,47 @@ from PyQt6.QtGui import QIcon, QPixmap
 # ---------------------------------------------------------------------------
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument("slug", nargs="?", default=None)
+parser.add_argument("--root", default=None,
+                    help="Engine root holding config.py (passed by launcher.py)")
 args, _ = parser.parse_known_args()
 
 SLUG = args.slug or "petrafied-acc"   # fallback for direct launch
 
 # ---------------------------------------------------------------------------
-# Optional: load per-generator override JS from a local file if present.
-# Place a file at  ./overrides/<slug>.js  to have it injected after load.
-# No file = no injection, no errors.
+# Shared paths — resolved through config.py so this window uses the same
+# data/<slug>/ layout the launcher and the README describe.  --root is what
+# launcher.py passes; falling back to the repo root keeps a direct
+# `python app_runner/runner.py <slug>` invocation working.
+# ---------------------------------------------------------------------------
+APP_ROOT = Path(args.root).resolve() if args.root else Path(__file__).parent.parent.resolve()
+sys.path.insert(0, str(APP_ROOT))
+import config
+
+# ---------------------------------------------------------------------------
+# Override JS sources, injected in this order after every page load:
+#   1. global-overrides.js             — launcher's "✎ Global JS" button
+#   2. gens/<slug>/overrides.js        — launcher's "✎ Edit App" editor
+#   3. app_runner/overrides/<slug>.js  — legacy location, still honoured
+# A missing file = no injection, no errors.
 # ---------------------------------------------------------------------------
 OVERRIDES_DIR = Path(__file__).parent / "overrides"
 
 def load_override_js(slug: str) -> str:
+    """Legacy per-slug override file: app_runner/overrides/<slug>.js"""
     js_file = OVERRIDES_DIR / f"{slug}.js"
+    if js_file.exists():
+        return js_file.read_text("utf-8")
+    return ""
+
+def load_global_js() -> str:
+    """global-overrides.js — runs for every generator."""
+    if config.GLOBAL_JS.exists():
+        return config.GLOBAL_JS.read_text("utf-8")
+    return ""
+
+def load_generator_js(slug: str) -> str:
+    """gens/<slug>/overrides.js — runs only for this generator."""
+    js_file = config.gen_dir(slug) / "overrides.js"
     if js_file.exists():
         return js_file.read_text("utf-8")
     return ""
@@ -86,10 +114,8 @@ class AppWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _setup_profile(self):
         slug = self.slug
-        storage = Path(__file__).parent / "storage" / slug
-        cache   = Path(__file__).parent / "cache"   / slug
-        storage.mkdir(parents=True, exist_ok=True)
-        cache.mkdir(parents=True, exist_ok=True)
+        storage = config.gen_storage_dir(slug)   # data/<slug>/storage
+        cache   = config.gen_cache_dir(slug)     # data/<slug>/cache
 
         self.profile = QWebEngineProfile(f"perchance_{slug}", self)
         self.profile.setPersistentStoragePath(str(storage))
@@ -205,10 +231,21 @@ class AppWindow(QMainWindow):
     # JS override injection (opt-in, from local file only)
     # ------------------------------------------------------------------
     def _inject_js(self):
-        script = load_override_js(self.slug)
-        if script.strip():
-            self.page.runJavaScript(script)
-            self.status.showMessage("⚡ Overrides injected")
+        """Run global-overrides.js, then gens/<slug>/overrides.js, then the
+        legacy app_runner/overrides/<slug>.js.  Each runs as its own
+        runJavaScript call so a failure in one cannot stop the others."""
+        sources = [
+            ("global-overrides.js",             load_global_js()),
+            (f"gens/{self.slug}/overrides.js",  load_generator_js(self.slug)),
+            (f"overrides/{self.slug}.js",       load_override_js(self.slug)),
+        ]
+        ran = []
+        for label, script in sources:
+            if script.strip():
+                self.page.runJavaScript(script)
+                ran.append(label)
+        if ran:
+            self.status.showMessage("⚡ Injected: " + ", ".join(ran))
 
     # ------------------------------------------------------------------
     # Toolbar actions
@@ -220,8 +257,7 @@ class AppWindow(QMainWindow):
     # Download handling
     # ------------------------------------------------------------------
     def _handle_download(self, item: QWebEngineDownloadRequest):
-        data_dir = Path(__file__).parent.parent / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
+        data_dir = config.gen_files_dir(self.slug)   # data/<slug>/files
 
         filename = item.suggestedFileName()
 
@@ -239,8 +275,7 @@ class AppWindow(QMainWindow):
         item.isFinishedChanged.connect(_on_finish)
 
     def _open_storage(self):
-        path = Path(__file__).parent / "storage" / self.slug
-        path.mkdir(parents=True, exist_ok=True)
+        path = config.gen_storage_dir(self.slug)
         if sys.platform == "win32":
             os.startfile(str(path))
         elif sys.platform == "darwin":

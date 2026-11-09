@@ -1,7 +1,7 @@
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "launchApp") {
     const { slug } = message;
-    const url = `https:
+    const url = `https://perchance.org/${slug}`;
     
     chrome.windows.create({
       url: url,

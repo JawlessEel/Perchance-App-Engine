@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Perchance App Engine runtime data — back this up, don't commit it
+data/
+gens/
+assets/
+
+# Build output (generated loadable extension folders)
+build/
+
+# Runner's own storage/cache dirs (see README note)
+app_runner/storage/
+app_runner/cache/
+
+# OS
+Thumbs.db
+.DS_Store
